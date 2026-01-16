@@ -577,6 +577,3 @@ void os_main(void) {
     shell_execute(line);
   }
 }
-
-// ERROR FS
-// NEED ADD VGA AUTO SCROLL
