@@ -100,6 +100,17 @@ int fs_create_file(char *name) {
   return -1;
 }
 
+int fs_delete_file(int index) {
+
+  filesystem[index].is_used = 0;
+  filesystem[index].size = 0;
+  filesystem[index].name[0] = '\0';
+  for (int i = 0; i < BLOCK_SIZE; i++) {
+    filesystem[index].data[i] = 0;
+  }
+  return 0;
+}
+
 int fs_write_file(char *name, char *content) {
   int index = fs_find_file(name);
   if (index == -1)
@@ -204,11 +215,19 @@ char scancode_to_ascii(uint8_t scancode) {
     char base_char = scan_code_table_normal[scancode];
     if (base_char >= 'a' && base_char <= 'z') {
       int uppercase = shift_active ^ kdb_state.capslock_pressed;
-      return uppercase ? (base_char - 32) : base_char;
+      if (uppercase) {
+        return base_char - 32;
+      } else {
+        return base_char;
+      }
     }
   }
-  const char *active_table =
-      shift_active ? scan_code_table_shift : scan_code_table_normal;
+  const char *active_table;
+  if (shift_active) {
+    active_table = scan_code_table_shift;
+  } else {
+    active_table = scan_code_table_normal;
+  }
 
   return active_table[scancode];
 }
@@ -351,14 +370,16 @@ void cmd_cat(int argc, char **argv);
 void cmd_write(int argc, char **argv);
 void cmd_touch(int argc, char **argv);
 void cmd_ls(int argc, char **argv);
+void cmd_rm(int argc, char **argv);
 
 command_t cmd_table[] = {{"help", "show all commands", cmd_help},
                          {"clear", "clear screen", cmd_clear},
                          {"echo", "printing text to screen", cmd_echo},
                          {"cat", "read the file", cmd_cat},
-                         {"write", "write data in the file", cmd_write},
+                         {"write", "write data in file", cmd_write},
                          {"touch", "creating new file", cmd_touch},
                          {"ls", "list all files", cmd_ls},
+                         {"rm", "remove(delete) file", cmd_rm},
                          {NULL, NULL, NULL}};
 
 // cmd functions full
@@ -412,6 +433,19 @@ void cmd_touch(int argc, char **argv) {
     print_string(" successfully created!\n");
   } else {
     print_string("file aldery exist");
+  }
+}
+
+void cmd_rm(int argc, char **argv) {
+  if (argc < 2) {
+    print_string("need file name(rm <filename>\n");
+  }
+  int index = fs_find_file(argv[1]);
+  if (index == -1) {
+    print_string("error: file not exist");
+  } else {
+    fs_delete_file(index);
+    print_string("file successfully deleted");
   }
 }
 
