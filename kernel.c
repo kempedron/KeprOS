@@ -13,7 +13,7 @@
 #define VGA_COLOR_BLACK 0x0
 #define VGA_COLOR_BLUE 0x1
 #define VGA_COLOR_GREEN 0x2
-#define MAX_FILES 16
+#define MAX_FILES 3
 #define MAX_FILENAME 32
 #define BLOCK_SIZE 512
 
@@ -28,12 +28,12 @@ int cursor_y = 0;
 
 char *strcpy(char *dest, const char *src) {
   char *saved = dest;
-  while ((*dest++ = *src++) && *dest != '\0') {
+  while ((*dest++ = *src++) != '\0') {
   }
   return saved;
 }
 
-size_t strlen(const char *str) {
+size_t str_len(const char *str) {
   const char *s = str;
   while (*s) {
     s++;
@@ -49,7 +49,7 @@ int strcmp(const char *s1, const char *s2) {
   return *(const unsigned char *)s1 - *(const unsigned char *)s2;
 }
 
-void *memcpy(void *dest, void *src, size_t n) {
+void *mem_cpy(void *dest, void *src, size_t n) {
   unsigned char *d = (unsigned char *)dest;
   const unsigned char *s = (const unsigned char *)src;
 
@@ -78,7 +78,7 @@ void fs_init() {
 
 int fs_find_file(char *name) {
   for (int i = 0; i < MAX_FILES; i++) {
-    if (filesystem[i].is_used && (strcmp(filesystem[i].name, name))) {
+    if (filesystem[i].is_used && !(strcmp(filesystem[i].name, name))) {
       return i;
     }
   }
@@ -105,10 +105,10 @@ int fs_write_file(char *name, char *content) {
   if (index == -1)
     index = fs_create_file(name);
   if (index >= 0) {
-    int len = strlen(content);
+    int len = str_len(content);
     if (len > BLOCK_SIZE)
       len = BLOCK_SIZE;
-    memcpy(filesystem[index].data, content, len);
+    mem_cpy(filesystem[index].data, content, len);
     filesystem[index].size = len;
     return 0;
   }
@@ -127,8 +127,12 @@ void fs_list_files(char arr[MAX_FILES][MAX_FILENAME]) {
   int file_index = 0;
 
   for (int i = 0; i < MAX_FILES; i++) {
+    arr[i][0] = '\0';
+  }
+
+  for (int i = 0; i < MAX_FILES; i++) {
     if (filesystem[i].is_used) {
-      memcpy(arr[file_index], filesystem[i].name, MAX_FILENAME);
+      strcpy(arr[file_index], filesystem[i].name);
       file_index++;
     }
   }
@@ -146,6 +150,9 @@ static inline void outb(uint16_t port, uint8_t val) {
   __asm__ volatile("outb %0, %1" : : "a"(val), "Nd"(port));
 }
 
+// Screen functions
+
+void scroll_screen();
 void set_terminal_color(uint8_t fg, uint8_t bg) {
   terminal_color = (bg << 4) | (fg & 0x0F);
 }
@@ -201,6 +208,7 @@ void print_char(char c) {
     update_cursor();
   }
   if (cursor_y >= VGA_HEIGHT) {
+    scroll_screen();
     cursor_y = VGA_HEIGHT - 1;
   }
 }
@@ -217,6 +225,31 @@ void clean_screen() {
     vidmem[j] = ' ';
     vidmem[j + 1] = 0x07;
     j += 2;
+  }
+  cursor_x = 0;
+  cursor_y = 0;
+}
+
+void scroll_screen() {
+
+  for (int y = 1; y < VGA_HEIGHT; y++) {
+    for (int x = 0; x < VGA_WIDTH; x++) {
+      int offset_from = (y * VGA_WIDTH + x) * 2;
+      int offset_to = ((y - 1) * VGA_WIDTH + x) * 2;
+      vidmem[offset_to] = vidmem[offset_from];
+      vidmem[offset_to + 1] = vidmem[offset_from + 1];
+    }
+  }
+  int last_row_start = (VGA_HEIGHT - 1) * VGA_WIDTH * 2;
+  for (int x = 0; x < VGA_WIDTH; x++) {
+    vidmem[last_row_start + x * 2] = ' ';
+    vidmem[last_row_start + x * 2 + 1] = terminal_color;
+  }
+
+  if (cursor_y == VGA_HEIGHT) {
+    cursor_y = VGA_HEIGHT - 1;
+    cursor_x = 0;
+    update_cursor();
   }
 }
 
@@ -402,6 +435,10 @@ void cmd_help(int argc, char **argv) {
 }
 
 void cmd_write(int argc, char **argv) {
+  if (argc < 2) {
+    print_string("need date to write(write <filename> <data>\n)");
+    return;
+  }
   int result_code = fs_write_file(argv[1], argv[2]);
   if (result_code == -1) {
     print_string("\nerror write data in file\n");
@@ -422,13 +459,17 @@ void cmd_cat(int argc, char **argv) {
 }
 
 void cmd_touch(int argc, char **argv) {
+  if (argc < 2) {
+    print_string("need file name(touch <file_name>\n");
+    return;
+  }
   int result_code = fs_create_file(argv[1]);
-  if (result_code == -2) {
-    print_string("\nerror: file aldery exist\n");
-  } else {
+  if (result_code != -2) {
     print_string("\nfile ");
     print_string(argv[1]);
     print_string(" successfully created!\n");
+  } else {
+    print_string("file aldery exist");
   }
 }
 
@@ -439,6 +480,7 @@ void cmd_ls(int argc, char **argv) {
   for (int i = 0; i < MAX_FILES; i++) {
     if (names[i][0] != '\0') {
       print_string(names[i]);
+      print_char('\n');
     }
   }
 }
@@ -518,3 +560,6 @@ void os_main(void) {
     shell_execute(line);
   }
 }
+
+// ERROR FS
+// NEED ADD VGA AUTO SCROLL
