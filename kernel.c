@@ -347,21 +347,42 @@ typedef struct {
 
 int tokinaze(char *str, char **argv) {
   int argc = 0;
+  int is_quote = 0;
+
   while (*str) {
     while (*str == ' ') {
       *str++ = '\0';
     }
-    if (*str == '\n')
-      break;
-    argv[argc++] = str;
-
-    while (*str != ' ' && *str != '\0') {
+    if (*str == '"') {
+      is_quote = 1;
       str++;
     }
+    if (!is_quote && *str == '\0') {
+      break;
+    }
+    argv[argc++] = str;
+
+    if (is_quote) {
+      while (*str && *str != '"') {
+        str++;
+      }
+      if (*str == '"') {
+        *str++ = '\0';
+        is_quote = 0;
+      }
+    } else {
+      while (*str && *str != ' ') {
+        str++;
+      }
+      if (*str) {
+        *str++ = '\0';
+      }
+    }
   }
+
+  argv[argc] = NULL;
   return argc;
 }
-
 // cmd functions templates
 void cmd_clear(int argc, char **argv) { clean_screen(); }
 void cmd_help(int argc, char **argv);
