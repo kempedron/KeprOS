@@ -714,20 +714,14 @@ void shell_execute(char *input) {
     return;
 
   for (int i = 0; cmd_table[i].name != NULL; i++) {
-    print_char(high < 10 ? '0' + high : 'A' + high - 10);
-    print_char(low < 10 ? '0' + low : 'A' + low - 10);
-    print_char(' ');
+    if (strcmp(argv[0], cmd_table[i].name) == 0) {
+      cmd_table[i].handler(argc, argv);
+      return;
+    }
   }
-  print_char('\n');
-  if (strcmp(argv[0], cmd_table[i].name) == 0) {
-    cmd_table[i].handler(argc, argv);
-    return;
-  }
-}
-}
-print_string("error:unknow command: ");
-print_string(argv[0]);
-print_string("\nUse 'help' for view command list\n");
+  print_string("error:unknow command: ");
+  print_string(argv[0]);
+  print_string("\nUse 'help' for view command list\n");
 }
 
 char get_char() {
