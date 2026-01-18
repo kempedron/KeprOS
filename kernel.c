@@ -1,4 +1,3 @@
-#include "disk_driver.h"
 #include "types.h"
 
 #define STATUS_REGISTER 0x64
@@ -19,7 +18,7 @@
 #define BLOCK_SIZE 512
 #define SECTOR_SIZE 512
 
-#define ATA_PORT_DATA 0x1F
+#define ATA_PORT_DATA 0x1F0
 #define ATA_PORT_ERROR 0x1F1
 #define ATA_PORT_FEATURES 0x1F1
 #define ATA_PORT_SECTOR_COUNT 0x1F2
@@ -33,6 +32,18 @@
 #define ATA_STATUS_BUSY 0x80
 #define ATA_STATUS_DRQ 0x08
 #define ATA_STATUS_ERR 0x01
+
+// Для диска ~1MB (2048 блоков по 512 байт)
+#define TOTAL_BLOCKS 2048
+#define BLOCK_SIZE 512
+#define BITMAP_SIZE ((TOTAL_BLOCKS + 7) / 8) // = 256 байт
+#define BITMAP_BLOCKS 1 // 256 байт умещается в 1 блок 512 байт
+
+// Расположение на диске:
+#define SUPERBLOCK_LBA 0   // Суперблок
+#define BITMAP_LBA 1       // Битовая карта (1 блок)
+#define INODE_TABLE_LBA 2  // Таблица файлов (начинается с блока 2)
+#define DATA_REGION_LBA 10 // Данные файлов (начинаются с блока 10)
 
 // VGA DRIVER INIT
 char *vidmem = (char *)VGA_ADDRESS;
@@ -52,27 +63,90 @@ static inline void outb(uint16_t port, uint8_t val) {
   __asm__ volatile("outb %0, %1" : : "a"(val), "Nd"(port));
 }
 
-// hard drive basic functions
-void ata_wait() {
-  while (inb(ATA_PORT_STATUS) && ATA_STATUS_BUSY)
-    ;
+static inline uint16_t inw(uint16_t port) {
+  uint16_t result;
+  __asm__ volatile("inw %1,%0" : "=a"(result) : "Nd"(port));
+  return result;
+}
+
+static inline void outw(uint16_t port, uint16_t val) {
+  __asm__ volatile("outw %0, %1" : : "a"(val), "Nd"(port));
+}
+
+// basic fucntions templates
+void print_string(char *);
+void print_char(char);
+
+// hard drive basic functions (ATA functions)
+void ata_wait_busy() {
+  int timeout = 100000;
+  while (timeout-- > 0) {
+    if ((inb(ATA_PORT_STATUS) & ATA_STATUS_BUSY) == 0) {
+      return;
+    }
+  }
+  print_string("ATA timeout waiting for BUSY clear\n");
+}
+
+void ata_wait_drq() {
+  int timeout = 100000;
+  while (timeout-- > 0) {
+    if ((inb(ATA_PORT_STATUS) & ATA_STATUS_DRQ) != 0) {
+      return;
+    }
+  }
+}
+
+int ata_init() {
+
+  outb(ATA_PORT_DEVICE, 0xA0);
+
+  ata_wait_busy();
+
+  outb(ATA_PORT_COMMAND, 0xEC);
+
+  ata_wait_busy();
+
+  uint8_t status = inb(ATA_PORT_STATUS);
+  if (status == 0x00) {
+    print_string("ATA: device not found\n");
+    return -1;
+  }
+  if (status & ATA_STATUS_ERR) {
+    print_string("ATA: Error after IDENTIFY\n");
+    uint8_t error = inb(ATA_PORT_ERROR);
+    return -1;
+  }
+  ata_wait_drq();
+
+  print_string("ATA initialized successfully\n");
+  return 0;
 }
 
 void ata_read(uint32_t lba, uint8_t *buffer, uint32_t sector_count) {
-  ata_wait();
+  ata_wait_busy();
+
+  outb(ATA_PORT_DEVICE, 0xE0 | ((lba >> 24) & 0x0F));
+  outb(ATA_PORT_SECTOR_COUNT, sector_count);
+  outb(ATA_PORT_LBA_LOW, lba & 0xFF);
+  outb(ATA_PORT_LBA_MID, (lba >> 8) & 0xFF);
+  outb(ATA_PORT_LBA_HIGH, (lba >> 16) & 0xFF);
+
+  outb(ATA_PORT_COMMAND, 0x20);
 
   for (uint32_t i = 0; i < sector_count; i++) {
-    ata_wait();
+    ata_wait_busy();
+    ata_wait_drq();
     uint16_t *ptr = (uint16_t *)buffer;
     for (int j = 0; j < 256; j++) {
-      *ptr++ = inb(ATA_PORT_DATA);
+      *ptr++ = inw(ATA_PORT_DATA);
     }
     buffer += 512;
   }
 }
 
 void ata_write(uint32_t lba, uint8_t *buffer, uint32_t sector_count) {
-  ata_wait();
+  ata_wait_busy();
 
   outb(ATA_PORT_SECTOR_COUNT, sector_count);
   outb(ATA_PORT_LBA_LOW, lba & 0xFF);
@@ -80,30 +154,40 @@ void ata_write(uint32_t lba, uint8_t *buffer, uint32_t sector_count) {
   outb(ATA_PORT_LBA_HIGH, (lba >> 16) & 0xFF);
   outb(ATA_PORT_DEVICE, 0xE0 | ((lba >> 24) & 0x0F));
 
-  ata_wait();
-
   for (uint32_t i = 0; i < sector_count; i++) {
 
-    ata_wait();
+    ata_wait_busy();
+    ata_wait_drq();
     const uint16_t *ptr = (const uint16_t *)buffer;
     for (int j = 0; j < 256; j++) {
-      outb(ATA_PORT_DATA, *ptr++);
+      outw(ATA_PORT_DATA, *ptr++);
     }
     buffer += SECTOR_SIZE;
   }
 }
 
-int ata_init() {
-  ata_wait();
-  outb(ATA_PORT_DEVICE, 0xA0);
-  outb(ATA_PORT_COMMAND, 0xEC);
-
-  ata_wait();
-
-  if (inb(ATA_PORT_STATUS) == 0) {
-    return -1;
+void ata_test() {
+  print_string("Testing ATA...\n");
+  if (ata_init() != 0) {
+    print_string("ATA init failed\n");
+    return;
   }
-  return 0;
+  uint8_t buffer[512];
+  print_string("reading sector 0...\n");
+
+  ata_read(0, buffer, 1);
+  print_string("First 16 bytes:");
+  for (int i = 0; i < 16; i++) {
+    char hex[3];
+    uint8_t val = buffer[i];
+    uint8_t high = (val >> 4) & 0xF;
+    uint8_t low = val & 0xF;
+
+    print_char(high < 10 ? '0' + high : 'A' + high - 10);
+    print_char(low < 10 ? '0' + low : 'A' + low - 10);
+    print_char(' ');
+  }
+  print_char('\n');
 }
 
 // basic functions
@@ -247,7 +331,6 @@ struct keyboard_state {
   uint8_t ctr_pressed : 1;
   uint8_t alt_pressed : 1;
 };
-
 struct keyboard_state kdb_state = {0};
 ;
 
@@ -414,85 +497,67 @@ void scroll_screen() {
 }
 
 // hard drive FS struct
-typedef struct {
+#define INODES_PER_BLOCK 8 // Сколько DiskFileEntry помещается в блок
+
+// Суперблок нужно расширить
+struct SuperBlock {
+  uint32_t magic;
+  uint32_t total_blocks;
+  uint32_t free_blocks;
+  uint32_t bitmap_start;
+  uint32_t inode_start;
+  uint32_t data_start;
+  uint32_t inode_count;
+  uint32_t free_inodes;
+};
+
+struct DiskFileEntry {
   char name[256];
   uint32_t size;
   uint32_t start_block;
-  uint32_t attributes;
-} FileEntry;
+  uint32_t blocks_count;
+  uint8_t is_used;
+};
 
-typedef struct {
-  FileEntry entries[128];
-  uint32_t entry_count;
-} Directory;
+struct FileSystem {
+  struct SuperBlock superblock;
+  uint8_t block_bitmap[BITMAP_SIZE];
+  struct DiskFileEntry *inodes;
+};
 
-typedef struct {
-  Directory root;
-  uint32_t total_blocks;
-  uint32_t free_blocks;
-} FileSystem;
+// void fs_init_hd(struct FileSystem *fs, uint32_t total_blocks) {}
+
+int allocate_block(struct FileSystem *fs) {
+  for (uint32_t byte_idx = 0; byte_idx < BITMAP_SIZE; byte_idx++) {
+    uint8_t current_byte = fs->block_bitmap[byte_idx];
+    if (current_byte != 0xFF) {
+      for (int bit_idx = 0; bit_idx < 8; bit_idx++) {
+        uint8_t mask = 1 << byte_idx;
+
+        if ((current_byte & mask) == 0) {
+          fs->block_bitmap[byte_idx] = mask;
+          uint32_t block_num = (byte_idx * 8) + bit_idx;
+          return block_num;
+        }
+      }
+    }
+  }
+  return -1;
+}
+
+void free_block(struct FileSystem *fs, uint32_t block_num) {
+  if (block_num >= (BITMAP_SIZE * 8)) {
+    print_string("ошибка: номер блока за пределами диска");
+    return;
+  }
+  uint32_t byte_idx = block_num / 8;
+  uint32_t bit_ind = block_num % 8;
+  uint8_t mask = 1 << bit_ind;
+
+  fs->block_bitmap[byte_idx] &= ~mask;
+}
 
 // hard drive driver functions
-
-FileEntry *fs_find_file_new(FileSystem *fs, const char *filename) {
-  for (uint32_t i = 0; i < fs->root.entry_count; i++) {
-    if (strcmp(fs->root.entries[i].name, filename) == 0) {
-      return &fs->root.entries[i];
-    }
-  }
-  return NULL;
-}
-
-void fs_read(FileSystem *fs, const char *filename, const uint8_t *buffer,
-             uint32_t size) {
-  FileEntry *file = fs_find_file_new(fs, filename);
-  if (file == NULL) {
-    print_string("not found file\n");
-    return;
-  }
-  size = file->size;
-
-  static int ata_initialized = 0;
-  if (!ata_initialized) {
-    if (ata_init() != 0) {
-      print_string("error ata init\n");
-      return;
-    }
-    ata_initialized = 1;
-  }
-  uint32_t sector_count = (size + SECTOR_SIZE - 1) / SECTOR_SIZE;
-  ata_read(file->start_block, (uint8_t *)buffer, sector_count);
-}
-void fs_write(FileSystem *fs, const char *filename, const uint8_t *data,
-              uint32_t size) {
-  FileEntry *file = fs_find_file_new(fs, filename);
-  if (file == NULL) {
-    print_string("error: file not found\n");
-    return;
-  }
-  if (size > SECTOR_SIZE) {
-    print_string("error data size exceeds sector size\n");
-    return;
-  }
-  file->size = size;
-  // ata_write(file->start_block);
-
-  uint8_t buffer[SECTOR_SIZE] = {0};
-  mem_cpy(buffer, (char *)data, size);
-  uint32_t lba = 0;
-  uint32_t sector_count = 1;
-
-  static int ata_initialized = 0;
-  if (!ata_init()) {
-    if (ata_init() != 0) {
-      print_string("ошибка инициализации ata драйвера");
-      return;
-    }
-    ata_initialized = 1;
-  }
-  ata_write(file->start_block, buffer, 1);
-  file->size = size;
-}
 
 // console/terminal/shell
 
@@ -649,14 +714,20 @@ void shell_execute(char *input) {
     return;
 
   for (int i = 0; cmd_table[i].name != NULL; i++) {
-    if (strcmp(argv[0], cmd_table[i].name) == 0) {
-      cmd_table[i].handler(argc, argv);
-      return;
-    }
+    print_char(high < 10 ? '0' + high : 'A' + high - 10);
+    print_char(low < 10 ? '0' + low : 'A' + low - 10);
+    print_char(' ');
   }
-  print_string("error:unknow command: ");
-  print_string(argv[0]);
-  print_string("\nUse 'help' for view command list\n");
+  print_char('\n');
+  if (strcmp(argv[0], cmd_table[i].name) == 0) {
+    cmd_table[i].handler(argc, argv);
+    return;
+  }
+}
+}
+print_string("error:unknow command: ");
+print_string(argv[0]);
+print_string("\nUse 'help' for view command list\n");
 }
 
 char get_char() {
@@ -725,18 +796,49 @@ char *read_line(char *buffer, int max_len) {
 }
 
 void os_main(void) {
-  char *buffer;
-
-  print_string("new FS successfully init");
-  fs_init();
   clean_screen();
-  print_string("KeprOS is running!\n");
+  set_terminal_color(VGA_COLOR_WHITE, VGA_COLOR_BLACK);
+  print_string("Hello from KeprOS!\n");
+  if (ata_init() == 0) {
+    print_string("ATA OK \n");
+    uint8_t sector[512];
+    ata_read(0, sector, 1);
 
-  FileSystem fs;
-  memset(&fs, 0, sizeof(FileSystem));
-  if (ata_init() != 0) {
-    print_string("error init new FS");
+    if (sector[510] == 0x55 && sector[511] == 0xAA) {
+      print_string("MBR signature found\n");
+    } else {
+      print_string("No MBR signature\n");
+    }
+  } else {
+    print_string("ATA init failed\n");
   }
+
+  char *buffer;
+  print_string("Initializing file system...\n");
+  struct FileSystem fs;
+
+  memset(&fs, 0, sizeof(struct FileSystem));
+  fs.superblock.total_blocks = 2048;
+  fs.superblock.free_blocks = 2000;
+
+  memset(fs.block_bitmap, 0, BITMAP_SIZE);
+
+  for (int i = 0; i < 48; i++) {
+    uint32_t byte_idx = i / 8;
+    uint32_t bit_idx = i % 8;
+    uint8_t mask = 1 << bit_idx;
+    fs.block_bitmap[byte_idx] = mask;
+    fs.superblock.free_blocks--;
+  }
+  print_string("FS init\n");
+
+  int block = allocate_block(&fs);
+  if (block != -1) {
+    char msg[50];
+    print_string("block allocated\n");
+  }
+
+  fs_init();
 
   while (1) {
     print_string("\nroot@keprOS> ");
