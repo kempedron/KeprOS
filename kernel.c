@@ -1,3 +1,4 @@
+#include "disk_driver.h"
 #include "types.h"
 
 #define STATUS_REGISTER 0x64
@@ -16,6 +17,23 @@
 #define MAX_FILES 3
 #define MAX_FILENAME 32
 #define BLOCK_SIZE 512
+#define SECTOR_SIZE 512
+#include "types.h"
+
+#define ATA_PORT_DATA 0x1F
+#define ATA_PORT_ERROR 0x1F1
+#define ATA_PORT_FEATURES 0x1F1
+#define ATA_PORT_SECTOR_COUNT 0x1F2
+#define ATA_PORT_LBA_LOW 0x1F3
+#define ATA_PORT_LBA_MID 0x1F4
+#define ATA_PORT_LBA_HIGH 0x1F5
+#define ATA_PORT_DEVICE 0x1F6
+#define ATA_PORT_COMMAND 0x1F7
+#define ATA_PORT_STATUS 0x1F7
+
+#define ATA_STATUS_BUSY 0x80
+#define ATA_STATUS_DRQ 0x08
+#define ATA_STATUS_ERR 0x01
 
 // VGA DRIVER INIT
 char *vidmem = (char *)VGA_ADDRESS;
@@ -23,6 +41,71 @@ uint8_t terminal_color = 0x07;
 
 int cursor_x = 0;
 int cursor_y = 0;
+
+// Assembler functions
+static inline unsigned char inb(unsigned short port) {
+  unsigned char result;
+  __asm__ volatile("inb %1, %0" : "=a"(result) : "Nd"(port));
+  return result;
+}
+
+static inline void outb(uint16_t port, uint8_t val) {
+  __asm__ volatile("outb %0, %1" : : "a"(val), "Nd"(port));
+}
+
+// hard drive basic functions
+void ata_wait() {
+  while (inb(ATA_PORT_STATUS) && ATA_STATUS_BUSY)
+    ;
+}
+
+void ata_read(uint32_t lba, uint8_t *buffer, uint32_t sector_count) {
+  ata_wait();
+
+  for (uint32_t i = 0; i < sector_count; i++) {
+    ata_wait();
+    uint16_t *ptr = (uint16_t *)buffer;
+    for (int j = 0; j < 256; j++) {
+      *ptr++ = inb(ATA_PORT_DATA);
+    }
+    buffer += 512;
+  }
+}
+
+void ata_write(uint32_t lba, uint8_t *buffer, uint32_t sector_count) {
+  ata_wait();
+
+  outb(ATA_PORT_SECTOR_COUNT, sector_count);
+  outb(ATA_PORT_LBA_LOW, lba & 0xFF);
+  outb(ATA_PORT_LBA_MID, (lba >> 8) & 0xFF);
+  outb(ATA_PORT_LBA_HIGH, (lba >> 16) & 0xFF);
+  outb(ATA_PORT_DEVICE, 0xE0 | ((lba >> 24) & 0x0F));
+
+  ata_wait();
+
+  for (uint32_t i = 0; i < sector_count; i++) {
+
+    ata_wait();
+    const uint16_t *ptr = (const uint16_t *)buffer;
+    for (int j = 0; j < 256; j++) {
+      outb(ATA_PORT_DATA, *ptr++);
+    }
+    buffer += SECTOR_SIZE;
+  }
+}
+
+int ata_init() {
+  ata_wait();
+  outb(ATA_PORT_DEVICE, 0xA0);
+  outb(ATA_PORT_COMMAND, 0xEC);
+
+  ata_wait();
+
+  if (inb(ATA_PORT_STATUS) == 0) {
+    return -1;
+  }
+  return 0;
+}
 
 // basic functions
 
@@ -147,18 +230,6 @@ void fs_list_files(char arr[MAX_FILES][MAX_FILENAME]) {
       file_index++;
     }
   }
-}
-
-// Assembler functions
-
-static inline unsigned char inb(unsigned short port) {
-  unsigned char result;
-  __asm__ volatile("inb %1, %0" : "=a"(result) : "Nd"(port));
-  return result;
-}
-
-static inline void outb(uint16_t port, uint8_t val) {
-  __asm__ volatile("outb %0, %1" : : "a"(val), "Nd"(port));
 }
 
 // Keyboard functions
@@ -333,6 +404,87 @@ void scroll_screen() {
     cursor_x = 0;
     update_cursor();
   }
+}
+
+// hard drive struct
+typedef struct {
+  char name[256];
+  uint32_t size;
+  uint32_t start_block;
+  uint32_t attributes;
+} FileEntry;
+
+typedef struct {
+  FileEntry entries[128];
+  uint32_t entry_count;
+} Directory;
+
+typedef struct {
+  Directory root;
+  uint32_t total_blocks;
+  uint32_t free_blocks;
+} FileSystem;
+
+// hard drive driver functions
+
+FileEntry *fs_find_file_new(FileSystem *fs, const char *filename) {
+  for (uint32_t i = 0; i < fs->root.entry_count; i++) {
+    if (strcmp(fs->root.entries[i].name, filename)) {
+      return &fs->root.entries[i];
+    }
+  }
+  return NULL;
+}
+
+void fs_read(FileSystem *fs, const char *filename, const uint8_t *buffer,
+             uint32_t size) {
+  FileEntry *file = fs_find_file_new(fs, filename);
+  if (file == NULL) {
+    print_string("not found file\n");
+    return;
+  }
+  size = file->size;
+
+  static int ata_initialized = 0;
+  if (!ata_initialized) {
+    if (ata_init() != 0) {
+      print_string("error ata init\n");
+      return;
+    }
+    ata_initialized = 1;
+  }
+  uint32_t sector_count = (size + SECTOR_SIZE - 1) / SECTOR_SIZE;
+  ata_read(file->start_block, (uint8_t *)buffer, sector_count);
+}
+void fs_write(FileSystem *fs, const char *filename, const uint8_t *data,
+              uint32_t size) {
+  FileEntry *file = fs_find_file_new(fs, filename);
+  if (file == NULL) {
+    print_string("error: file not found\n");
+    return;
+  }
+  if (size > SECTOR_SIZE) {
+    print_string("error data size exceeds sector size\n");
+    return;
+  }
+  file->size = size;
+  // ata_write(file->start_block);
+
+  uint8_t buffer[SECTOR_SIZE] = {0};
+  mem_cpy(buffer, (char *)data, size);
+  uint32_t lba = 0;
+  uint32_t sector_count = 1;
+
+  static int ata_initialized = 0;
+  if (!ata_init()) {
+    if (ata_init() != 0) {
+      print_string("ошибка инициализации ata драйвера");
+      return;
+    }
+    ata_initialized = 1;
+  }
+  ata_write(file->start_block, buffer, 1);
+  file->size = size;
 }
 
 // console/terminal/shell
@@ -567,6 +719,12 @@ char *read_line(char *buffer, int max_len) {
 
 void os_main(void) {
   char *buffer;
+  FileSystem fs;
+  if (ata_init() != 0) {
+    print_string("error init new FS");
+    return;
+  }
+  print_string("new FS successfully init");
   fs_init();
   clean_screen();
   print_string("KeprOS is running!\n");

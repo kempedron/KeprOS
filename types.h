@@ -1,5 +1,3 @@
-// kernel/types.h
-
 #ifndef KERNEL_TYPES_H
 #define KERNEL_TYPES_H
 
