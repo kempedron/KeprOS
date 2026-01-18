@@ -18,7 +18,6 @@
 #define MAX_FILENAME 32
 #define BLOCK_SIZE 512
 #define SECTOR_SIZE 512
-#include "types.h"
 
 #define ATA_PORT_DATA 0x1F
 #define ATA_PORT_ERROR 0x1F1
@@ -109,6 +108,14 @@ int ata_init() {
 
 // basic functions
 
+void *memset(void *ptr, int value, size_t num) {
+  unsigned char *p = ptr;
+  while (num--) {
+    *p++ = (unsigned char)value;
+  }
+  return ptr;
+}
+
 char *strcpy(char *dest, const char *src) {
   char *saved = dest;
   while ((*dest++ = *src++) != '\0') {
@@ -146,7 +153,7 @@ void *mem_cpy(void *dest, void *src, size_t n) {
 struct File {
   char name[MAX_FILENAME];
   int size;
-  char data[MAX_FILES];
+  char data[BLOCK_SIZE];
   int is_used;
 };
 
@@ -406,7 +413,7 @@ void scroll_screen() {
   }
 }
 
-// hard drive struct
+// hard drive FS struct
 typedef struct {
   char name[256];
   uint32_t size;
@@ -429,7 +436,7 @@ typedef struct {
 
 FileEntry *fs_find_file_new(FileSystem *fs, const char *filename) {
   for (uint32_t i = 0; i < fs->root.entry_count; i++) {
-    if (strcmp(fs->root.entries[i].name, filename)) {
+    if (strcmp(fs->root.entries[i].name, filename) == 0) {
       return &fs->root.entries[i];
     }
   }
@@ -719,15 +726,17 @@ char *read_line(char *buffer, int max_len) {
 
 void os_main(void) {
   char *buffer;
-  FileSystem fs;
-  if (ata_init() != 0) {
-    print_string("error init new FS");
-    return;
-  }
+
   print_string("new FS successfully init");
   fs_init();
   clean_screen();
   print_string("KeprOS is running!\n");
+
+  FileSystem fs;
+  memset(&fs, 0, sizeof(FileSystem));
+  if (ata_init() != 0) {
+    print_string("error init new FS");
+  }
 
   while (1) {
     print_string("\nroot@keprOS> ");
@@ -735,3 +744,5 @@ void os_main(void) {
     shell_execute(line);
   }
 }
+
+// ошибка в инициализации FileSystem fs;
